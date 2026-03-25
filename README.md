@@ -1,5 +1,7 @@
 # Agent Dev Flow
 
+[中文版](README.zh.md)
+
 A role-based slash command framework for Claude Code that structures human-agent collaboration across the full SDLC. Agents generate, humans confirm.
 
 ---
