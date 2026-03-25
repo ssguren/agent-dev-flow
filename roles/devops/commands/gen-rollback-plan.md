@@ -1,263 +1,248 @@
-# /gen-rollback-plan
+# /gen-rollback-plan — 生成部署回滚方案
 
-生成本次部署的回滚方案。
-
-## 用法
+## 使用说明
 
 ```
 /gen-rollback-plan
 ```
 
-在执行 `/gen-deploy-checklist` 之后运行，或单独运行（需提供变更信息）。
+无需额外参数，命令自动读取本次变更信息（从 deploy checklist 或 git diff）生成完整回滚方案。建议在执行 `/gen-deploy-checklist` 之后运行本命令，以便获得更准确的变更信息。
 
 ---
 
-## 执行步骤
+## Step 1：分析变更类型
 
-### Step 1：收集本次变更信息
+读取以下来源（按优先级）获取本次变更信息：
 
-从以下位置读取变更内容：
+1. 已生成的 deploy checklist（`docs/deploy/` 目录下的最新文件）
+2. `git diff <上一个稳定 tag>...HEAD --name-only`
+3. 最近合并的 PR 描述
 
-- PR 描述和变更文件列表
-- DB migration 文件（`db/migrations/`、`flyway/`、`liquibase/` 等）
-- 配置文件变更（`application-*.yml`、Nacos 配置）
-- 依赖变更（`pom.xml`、`package.json`）
-- 部署配置变更（`k8s/`、`docker-compose.yml`、`deploy/`）
+将变更分为以下类型（一次部署可能包含多种类型）：
 
-### Step 2：分析变更类型和回滚可行性
+- **纯代码变更**：只有业务逻辑修改，无 DB 和配置变更
+- **DB schema 变更**：有 migration 文件，可能包含加列、删列、改类型等
+- **配置变更**：修改了 `application*.yml`、Nacos 配置、环境变量
+- **依赖外部服务变更**：调用了新的外部服务接口，或修改了现有外部服务的调用方式
 
-#### 纯代码变更
+---
 
-**可回滚性**：是
-**回滚方式**：重新部署上一个稳定版本的镜像/包
+## Step 2：对每类变更生成对应回滚步骤
 
-回滚步骤模板：
+### 纯代码变更
+
+**可回滚性：可回滚**
+
+回滚方案（选其一）：
+
 ```bash
-# 查看上一个稳定 tag
-git tag --sort=-creatordate | head -10
+# 方案 A：部署上一个稳定 tag（推荐，最快）
+# 将 <previous-tag> 替换为上一个稳定版本号
+kubectl set image deployment/service service=registry.example.com/service:<previous-tag>
+kubectl rollout status deployment/service --timeout=5m
 
-# 重新部署上一个稳定版本（以 Kubernetes 为例）
-kubectl set image deployment/<app-name> <container>=<image>:<prev-tag> -n <namespace>
+# 方案 B：通过 git revert 生成新版本
+git revert <commit-sha>
+git push origin main
+# 等待 CI/CD 构建并部署新镜像
 
-# 等待 rollout 完成
-kubectl rollout status deployment/<app-name> -n <namespace>
+# 验证回滚生效
+kubectl rollout status deployment/service
+curl -s https://api.example.com/health | jq '.version'
 ```
 
----
+### DB Schema 变更
 
-#### 含 DB Schema 变更
+**需逐条判断可逆性：**
 
-**必须对每个 migration 文件逐一判断可逆性：**
-
-| 操作类型 | 可逆性 | 说明 |
+| 操作类型 | 可逆性 | 回滚思路 |
 |---|---|---|
-| 新增表 | 可逆 | 回滚时 DROP TABLE（确认无数据或数据可丢弃） |
-| 新增列（可 NULL 或有默认值） | 可逆 | 回滚时 DROP COLUMN |
-| 新增列（NOT NULL 无默认值） | 条件可逆 | 需要先填充数据再加约束，回滚需先移除约束 |
-| 新增索引 | 可逆 | 回滚时 DROP INDEX |
-| 新增外键 | 条件可逆 | 回滚时 DROP FOREIGN KEY，需确认数据完整性 |
-| 修改列类型 | **不可逆** | 类型转换可能导致数据截断或丢失 |
-| 修改列名 | **不可逆** | 旧代码引用旧列名会报错 |
-| 删除列 | **不可逆** | 数据已删除，无法恢复 |
-| 删除表 | **不可逆** | 数据已删除，无法恢复 |
-| 数据迁移脚本 | **不可逆** | 数据转换通常无法自动还原 |
-| 修改约束（NOT NULL、UNIQUE） | 条件可逆 | 需确认现有数据是否满足回滚后的约束 |
+| 加列（可空） | 可回滚 | `ALTER TABLE ... DROP COLUMN ...` |
+| 加列（NOT NULL，有默认值） | 可回滚 | `ALTER TABLE ... DROP COLUMN ...` |
+| 加索引 | 可回滚 | `DROP INDEX ...` |
+| 加表 | 可回滚 | `DROP TABLE ...`（注意数据丢失风险） |
+| 删列 | **不可回滚** | 数据已丢失，需 forward-fix |
+| 修改列类型 | **通常不可回滚** | 数据转换可能有精度损失 |
+| 加 NOT NULL 约束（已有 null 数据） | **不可回滚** | 历史数据已变更 |
+| 数据迁移脚本 | **通常不可回滚** | 数据已被修改，需 forward-fix |
 
-**对不可逆变更的处理原则：**
-
-在回滚方案中用以下格式显式标注，不得省略：
-
-```
-!!! 不可逆变更 !!!
-
-变更：migration_20240101_drop_column_users_legacy_field.sql
-操作：删除 users 表的 legacy_field 列
-可逆性：不可逆（数据已删除，无法从代码回滚中恢复）
-
-处理方式：forward-fix（向前修复）
-说明：
-- 代码可以回滚到旧版本，但旧版本代码依赖 legacy_field 列，回滚后将报错
-- 正确处理方式：不回滚代码，而是在新版本代码中修复问题（forward-fix）
-- 如果业务无法接受 forward-fix，需要在部署前备份数据，并制定手动恢复方案
-
-回滚前必须确认：
-- [ ] 是否有 legacy_field 数据的备份？
-- [ ] 旧版本代码是否依赖 legacy_field？
-- [ ] 技术负责人已确认采用 forward-fix 策略
-```
-
----
-
-#### 含配置变更
-
-**可回滚性**：通常是（取决于配置类型）
-
-回滚步骤：
-```
-1. 确认旧配置的备份位置：
-   - Nacos：历史版本记录
-   - Git：上一个提交的配置文件
-   - 手动备份：部署前的备份文件
-
-2. 恢复配置：
-   [具体命令，根据配置管理工具填写]
-
-3. 如需重启服务以应用配置：
-   [重启命令]
-
-4. 验证配置已生效：
-   [验证步骤]
-```
-
-特殊情况：
-- 数据库连接配置回滚：需确认旧数据库是否仍然可用
-- 密钥/证书变更回滚：需确认旧密钥是否仍然有效
-- feature flag 变更：可以直接切换，最简单的回滚
-
----
-
-#### 含外部依赖变更（SDK 版本、第三方服务配置）
-
-**可回滚性**：视具体情况而定
-
-分析要点：
-- SDK 升级：回滚代码即可，但需确认旧版本 SDK 的兼容性
-- 第三方服务 API 版本升级：可能需要同步回滚 API 调用方式
-- 外部服务 URL/密钥变更：按配置变更处理
-
----
-
-### Step 3：确定回滚触发条件
-
-根据服务的关键性和监控指标，定义回滚触发条件：
-
-```
-回滚触发条件（满足任意一条即触发，由决策人判断执行）：
-
-- [ ] 部署后 5 分钟内，错误率 > X%（基线：部署前 7 天均值）
-- [ ] 关键业务接口响应时间 > Xms（基线：部署前 P99）
-- [ ] 冒烟测试中有 L1 或 L2 级别用例失败
-- [ ] 收到用户投诉核心功能不可用
-- [ ] 监控告警触发（指定具体告警名称）
-```
-
-触发条件的具体阈值由 Tech Lead 在部署前确认填写。
-
----
-
-## 输出格式
-
-```markdown
-# 回滚方案 — [服务名] [版本/PR号] [日期]
-
-## 回滚决策
-
-**决策人**：Tech Lead 或值班负责人（[姓名占位符]）
-**授权方式**：电话/即时通讯工具确认
-**时间窗口**：部署后 30 分钟内可执行回滚（超过此时间需重新评估）
-
----
-
-## 回滚触发条件
-
-满足以下任意一条，由决策人判断是否执行回滚：
-- 条件 1：...
-- 条件 2：...
-
----
-
-## 变更可逆性分析
-
-| 变更类型 | 变更内容 | 可逆性 | 备注 |
-|---|---|---|---|
-| 代码 | 新增订单折扣逻辑 | 可逆 | 重新部署旧镜像即可 |
-| DB | 新增 discount_amount 列 | 可逆 | 回滚时 DROP COLUMN |
-| DB | 删除 legacy_field 列 | **不可逆** | 见下方特别说明 |
-| 配置 | 修改限流阈值 | 可逆 | 恢复 Nacos 历史版本 |
-
----
-
-## 不可逆变更说明
-
-[如有不可逆变更，在此详细说明，格式见 "!!! 不可逆变更 !!!" 模板]
-
----
-
-## 回滚步骤
-
-### 阶段 1：决策确认（预计 2 分钟）
-
-- [ ] 决策人已确认执行回滚
-- [ ] 通知相关团队回滚开始
-
-### 阶段 2：配置回滚（如有配置变更，预计 5 分钟）
-
-```bash
-# 恢复 Nacos 配置（示例）
-# 1. 打开 Nacos 控制台
-# 2. 找到 [配置 dataId]
-# 3. 点击"历史版本"，选择 [部署前的版本号]
-# 4. 点击"回滚"，确认
-```
-
-- [ ] 配置已恢复至部署前版本
-
-### 阶段 3：代码回滚（预计 5-10 分钟）
-
-```bash
-# 重新部署上一个稳定版本
-kubectl set image deployment/<app-name> \
-  <container>=<registry>/<image>:<prev-stable-tag> \
-  -n <namespace>
-
-# 等待滚动更新完成
-kubectl rollout status deployment/<app-name> -n <namespace> --timeout=5m
-```
-
-- [ ] 所有实例已更新到旧版本
-- [ ] `kubectl get pods -n <namespace>` 确认 pod 全部 Running
-
-### 阶段 4：DB 回滚（如有可逆 DB 变更，预计 X 分钟）
+**可逆 DB 变更的回滚命令示例：**
 
 ```sql
--- 回滚示例：删除新增的列
-ALTER TABLE orders DROP COLUMN discount_amount;
+-- 回滚：删除新增的列
+ALTER TABLE users DROP COLUMN phone;
+
+-- 回滚：删除新增的索引
+DROP INDEX idx_users_phone ON users;
 ```
 
-- [ ] DB 变更已回滚
-- [ ] 执行后确认应用日志无 DB 错误
+执行 DB 回滚前必须：
+1. 先完成代码回滚（先回滚代码，再执行 DB 回滚 SQL）
+2. 备份当前数据（`mysqldump` 或数据库快照）
+3. 在 staging 环境验证回滚 SQL 执行无误
 
-### 阶段 5：验证回滚成功（预计 5 分钟）
+**不可逆 DB 变更 — forward-fix 方向：**
 
-- [ ] 执行冒烟测试 L1（基础连通）：全部通过
-- [ ] 执行冒烟测试 L2（核心认证）：全部通过
-- [ ] 执行冒烟测试 L3（核心业务）：全部通过
-- [ ] 监控面板错误率恢复正常
+```
+WARNING: 不可逆操作
+以下 DB 变更无法通过回滚恢复，需要 forward-fix：
 
-### 阶段 6：回滚完成通知
+- 删除了列 users.legacy_field（数据已永久丢失）
+  forward-fix 思路：若业务需要该数据，需从备份导入；若不需要，评估影响后保持现状
 
-- [ ] 通知相关团队回滚完成
-- [ ] 记录回滚时间和操作人
-- [ ] 创建事故记录（incident ticket）
+- 修改了列 orders.amount 类型（DECIMAL(10,2) → DECIMAL(15,4)）
+  forward-fix 思路：确认数据精度是否正确，编写补丁脚本修复异常数据
+```
+
+### 配置变更
+
+**可回滚性：可回滚（具体步骤取决于配置管理方式）**
+
+```bash
+# Nacos 配置回滚：在 Nacos 控制台操作
+# 路径：Nacos 控制台 → 配置管理 → 配置列表 → 目标配置 → 历史版本 → 选择回滚目标版本
+
+# 环境变量回滚（Kubernetes ConfigMap）
+kubectl apply -f k8s/configmap-previous.yaml
+kubectl rollout restart deployment/service
+
+# 验证配置生效
+kubectl exec -it <pod-name> -- env | grep TARGET_CONFIG_KEY
+```
+
+如果配置未版本化（无 Nacos / 未 git 跟踪），在输出中标注：
+
+```
+WARNING: 配置未版本化
+此配置变更无历史版本可切换，需要手动恢复旧值。
+请确认旧的配置值（检查 git history 或联系上次修改人）后再操作。
+```
+
+### 依赖外部服务变更
+
+**可回滚性：依赖对方接口的向后兼容性**
+
+```
+如果是新增调用外部接口：
+  代码回滚即可（旧代码不会调用新接口）
+
+如果是修改了现有外部接口的调用参数：
+  代码回滚后确认旧版本的调用参数外部服务仍能接受
+  如外部服务已废弃旧接口格式：需 forward-fix，代码回滚无法解决
+
+如果有 feature flag：
+  降级步骤：关闭 feature flag（如 use-new-external-api=false）
+  验证：确认流量已切回旧逻辑
+```
+
+---
+
+## Step 3：明确标注不可逆变更
+
+对所有不可逆变更，在输出文档顶部用以下格式汇总：
+
+```
+## 不可逆变更汇总（部署前必须确认）
+
+本次部署包含以下不可逆变更，一旦执行无法通过回滚恢复：
+
+1. [不可逆] DB 删列：users 表删除 legacy_field 列
+   影响：该列数据永久丢失，无法通过回滚恢复
+   是否已备份：[待确认]
+
+2. [不可逆] 数据迁移：orders.status 从数字枚举改为字符串枚举
+   影响：历史数据已被修改，无法通过 SQL 完全还原
+   forward-fix 思路：如迁移结果有误，需编写反向脚本并人工校验
+
+操作：请 Tech Lead 确认以上变更已知晓，且已完成数据备份，再执行部署。
+```
+
+---
+
+## Step 4：输出格式
+
+```markdown
+# 回滚方案 — [服务名] [版本号] [日期]
+
+## 不可逆变更汇总
+
+[如有不可逆变更，在此列出；如无，标注"本次部署无不可逆变更"]
+
+---
+
+## 回滚触发条件（满足任意一条，启动回滚评估）
+
+- 错误率 > 5%，持续 3 分钟
+- P99 响应时间 > 5 秒，持续 5 分钟
+- 核心业务接口（登录 / 下单 / 支付）成功率 < 95%
+- 监控告警连续触发 3 次以上
+
+（以上为建议值，请根据项目实际 SLA 调整）
+
+## 决策人
+
+- go/no-go（是否回滚）：Tech Lead [姓名] / 值班负责人 [联系方式]
+- 不可逆操作二次确认：[姓名] [联系方式]
+
+---
+
+## 回滚执行步骤
+
+### 第 1 步：代码回滚（预计耗时 5 分钟）
+
+```bash
+kubectl set image deployment/service service=registry.example.com/service:v1.2.3
+kubectl rollout status deployment/service --timeout=5m
+```
+
+验证：
+```bash
+curl -s https://api.example.com/health | jq '.version'
+# 预期：{"version":"v1.2.3","status":"UP"}
+```
+
+### 第 2 步：DB 回滚（预计耗时 2 分钟，仅在有可逆 DB 变更时执行）
+
+先备份当前数据：
+```bash
+mysqldump -u root -p dbname > backup-before-rollback-$(date +%Y%m%d%H%M).sql
+```
+
+执行回滚 SQL：
+```sql
+ALTER TABLE users DROP COLUMN phone;
+DROP INDEX idx_users_phone ON users;
+```
+
+验证：
+```sql
+SHOW COLUMNS FROM users;
+-- 确认 phone 列已不存在
+```
+
+### 第 3 步：配置回滚（预计耗时 3 分钟，仅在有配置变更时执行）
+
+```bash
+kubectl apply -f k8s/configmap-v1.2.3.yaml
+kubectl rollout restart deployment/service
+kubectl exec -it <pod-name> -- env | grep CHANGED_CONFIG_KEY
+```
 
 ---
 
 ## 预计总耗时
 
-| 阶段 | 预计时长 |
+| 步骤 | 耗时 |
 |---|---|
-| 决策确认 | 2 分钟 |
-| 配置回滚 | 5 分钟 |
-| 代码回滚 | 10 分钟 |
-| DB 回滚 | X 分钟 |
-| 验证 | 5 分钟 |
-| **总计** | **约 22 分钟** |
+| 代码回滚 | 5 分钟 |
+| DB 回滚（如需） | 2 分钟 |
+| 配置回滚（如需） | 3 分钟 |
+| 验证确认 | 5 分钟 |
+| **合计** | **约 10-15 分钟** |
 
----
+## 数据影响说明
 
-## 回滚后的后续工作
-
-- 分析根因（由开发负责）
-- 更新部署方案后重新发布
-- 复盘并更新回滚预案
+- 回滚过程中新写入的数据：不受代码回滚影响，数据仍在 DB 中
+- DB 回滚影响的数据范围：[根据具体 migration 说明]
+- 用户感知：滚动重启期间可能有短暂请求失败（约 30 秒内）
 ```
