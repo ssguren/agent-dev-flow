@@ -15,7 +15,7 @@
 
 1. 打开 [claude.ai](https://claude.ai)
 2. 左侧点击 **Projects** → **New Project**
-3. 命名为 `<项目名> — PM`，例如 `AdobeFlow — PM`
+3. 命名为 `<项目名> — PM`，例如 `MyProject — PM`
 
 ---
 
