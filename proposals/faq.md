@@ -6,23 +6,26 @@
 
 ## 已知问题
 
-### Q: Claude Web 配置 GitHub MCP 后，贡献者 token 拉取不到项目 Issue
+### Q: GitHub MCP 拉取不到项目 Issue
 
-**状态**：未解决，待验证
+**状态**：已解决
 
-**现象**：PM 在 Claude Web 配置 GitHub MCP 时，使用贡献者身份的 token，无法正常读取仓库 Issues。
+**现象**：无论是 Claude Web 还是 Claude Code CLI，配置 GitHub MCP 后无法读取仓库 Issues。
 
-**可能原因**：
-- PAT（Personal Access Token）缺少必要的 scope：
-  - 私有仓库需要 `repo` scope
-  - 公开仓库需要 `public_repo` + `issues` scope
-- Claude Web OAuth 授权时默认 scope 不包含 Issues 读写权限
+**根本原因**：GitHub MCP 未配置，或配置时提供的 PAT scope 不足。
 
-**待验证方案**：
-1. 检查 PAT scope，确认包含 `repo`（私有）或 `issues`（公开）
-2. 通过 Claude Web OAuth 重新授权，手动扩展授权范围
+**解决方案**：
 
-**后续**：验证通过后更新此条目，补充解决方案。
+**Claude Web（PM 侧）**：
+在 Claude Project 的 Integrations 里添加 GitHub MCP，授权时确保 PAT 包含 `repo` scope（私有仓库）或 `public_repo` + `issues` scope（公开仓库）。
+
+**Claude Code CLI（开发者侧）**：
+```bash
+claude mcp add --transport stdio github -- npx -y @modelcontextprotocol/server-github
+```
+配置时提供 GitHub PAT，scope 需包含 `repo`。
+
+**注意**：有代码提交权限（git push）不等于配置了 GitHub MCP。两者是独立的——git 用 SSH key，MCP 用 PAT。
 
 ---
 
