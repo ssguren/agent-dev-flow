@@ -1,15 +1,73 @@
 # 方案：通过 GitHub MCP 支持非开发人员参与 Agent 协作
 
 **状态**：草案，讨论中
-**背景**：当前 agent-dev-flow 的所有命令依赖 Claude Code CLI，非开发人员（PM、运营、QA）无法直接参与。本方案探索以 GitHub 原生界面为交互层，让所有角色通过 Issue、PR、Comment 驱动 Agent 工作流。
+
+---
+
+## 背景与真实痛点
+
+当前 agent-dev-flow 的所有命令依赖 Claude Code CLI，只有开发者能参与。
+
+但非技术角色（PM、运营、QA）有自己的现实：
+
+- 她们活在 **Claude Web / App** 里，有聊天习惯和对话记忆，不会切换到 CLI
+- 她们**不熟悉 Git**，不应该要求她们改变操作方式
+- 她们愿意配合——前提是**不打破她们现有的工作习惯**
+
+所以问题不是"如何让非技术人员用 GitHub"，而是：
+
+> **如何让 Claude Web 用户在她们熟悉的聊天界面里，通过 GitHub MCP 直接参与协作流程？**
+
+GitHub 不是她们的界面，而是她们操作的对象。
+
+---
+
+## 能配置什么
+
+Claude Web/App 支持用户自行添加 MCP Server。GitHub 官方 MCP Server 能力覆盖：
+
+- 读写 Issues（创建、评论、打 label、关闭）
+- 读写 PR（评论、review、label）
+- 读取仓库文件内容、commit / diff
+- 创建/更新文件
+- 管理 Project（看板、milestone）
+
+PM 在 Claude Web 配置好 GitHub MCP 后，**对仓库的操作能力几乎等同于一个有写权限的协作者**，只是操作界面换成了对话框。
 
 ---
 
 ## 核心思路
 
-**非开发人员通过 GitHub 原生界面操作，Agent 通过 GitHub MCP 监听并响应。**
+**非技术人员通过 Claude Web + GitHub MCP 操作，开发者通过 Claude Code CLI 操作，GitHub 仓库是双方共享的单一上下文层。**
 
-不需要安装 Claude Code，不需要懂命令行。PM 开 Issue，QA 在 PR 里评论，DevOps 勾 Checklist——Agent 在后台完成分析和生成工作，结果以 Comment 形式回到 GitHub。
+```
+PM（Claude Web + GitHub MCP）        开发者（Claude Code CLI）
+            ↓                                    ↓
+   写 Issue / Comment / label            读 Issue / PR diff / 文件
+   更新需求文档（via MCP）               读文档生成接口规范
+   确认 Gap（打 label）                  读 confirmed gap 写代码
+            ↓                                    ↓
+                   GitHub 仓库（单一事实来源）
+```
+
+两边的 Claude 会话内容不同，但**操作的对象是同一个仓库**。任何一方的动作以 Issue / Comment / 文件变更的形式落地，另一方下次读取时自然可见。
+
+---
+
+## 关键约定：对话是草稿区，GitHub 是决策区
+
+**Claude 对话记录 ≠ 协作记录。**
+
+- PM 的 Claude Web 聊天记录是她个人的工作草稿，不需要放弃
+- 但**影响他人的决策必须通过 MCP 写入 GitHub**，才能进入共享上下文
+- GitHub Issue / label 的状态就是协作状态，任何人任何时候打开都是最新的
+
+这和现实工作一样：你可以在本地草稿里写十遍，但只有发出去的那条消息才算数。
+
+不需要两边实时同步，只需要约定：
+- PM 的产品决策 → 落到 Issue Comment 或 label
+- 开发者的技术分析 → 回复到对应 Issue
+- 任何跨角色生效的内容 → 必须落到 GitHub
 
 ---
 
