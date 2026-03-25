@@ -1,8 +1,6 @@
-# /check-config-diff
+# /check-config-diff — 对比环境配置差异
 
-对比两个环境的配置差异。
-
-## 用法
+## 使用说明
 
 ```
 /check-config-diff <env1> <env2>
@@ -12,152 +10,192 @@
 ```
 /check-config-diff staging production
 /check-config-diff dev staging
+/check-config-diff staging production --whitelist docs/config-whitelist.md
+```
+
+- `env1`：基准环境（通常是来源环境，如 staging）
+- `env2`：目标环境（通常是待验证的环境，如 production）
+- `--whitelist`：指定已知差异白名单文件路径（可选）
+
+---
+
+## Step 1：读取两个环境的配置文件
+
+从以下来源读取配置（尽量多读，合并后对比）：
+
+| 配置来源 | 典型路径 | 说明 |
+|---|---|---|
+| Spring 配置 | `application-<env>.yml` / `application-<env>.properties` | 标准 Spring Boot 配置 |
+| Nacos 导出 | `nacos-export-<env>.yaml` / `docs/nacos/` | Nacos 配置中心导出文件 |
+| 环境变量文件 | `.env.<env>` / `k8s/<env>/configmap.yaml` | 环境变量或 K8s ConfigMap |
+| Docker Compose | `docker-compose.<env>.yml` | 本地或简单部署时 |
+
+读取完成后，将两个环境的所有配置展开为扁平的 key=value 格式，便于逐条对比：
+
+```
+# env1（staging）扁平化结果示例
+server.port=8080
+spring.datasource.url=jdbc:mysql://staging-db:3306/app
+spring.redis.host=staging-redis
+app.feature.new-ui=true
+app.timeout.request=5000
+
+# env2（production）扁平化结果示例
+server.port=8080
+spring.datasource.url=jdbc:mysql://prod-db:3306/app
+spring.redis.host=prod-redis
+app.feature.new-ui=false
+app.timeout.request=3000
+```
+
+如果某个环境的配置文件无法找到或无法读取，停止并报告：
+
+```
+无法读取配置文件，请检查以下路径是否存在：
+- staging: application-staging.yml — 找到
+- production: application-production.yml — 未找到
+
+请提供 production 环境的配置文件路径后重新执行。
 ```
 
 ---
 
-## 执行步骤
+## Step 2：分类所有差异
 
-### Step 1：读取两个环境的配置文件
+将所有差异分为四类：
 
-从以下位置读取配置（按优先级顺序）：
+### EXPECTED（正常的环境差异）
 
-| 配置类型 | 路径约定 |
-|---|---|
-| Nacos 导出文件 | `nacos-configs/<env>/<service>.yml` |
-| Spring 多环境配置 | `src/main/resources/application-<env>.yml` |
-| 环境变量文件 | `.env.<env>` 或 `.env.<env>.local` |
-| Docker Compose 环境 | `docker-compose.<env>.yml` 中的 `environment` 段 |
-| Kubernetes ConfigMap | `k8s/<env>/configmap.yaml` |
+定义：预期中不同环境就应该有不同值的配置，属于正常运维状态。
 
-如果文件不可访问，停下来要求用户提供配置内容，**不要凭空推断配置值**。
+常见的 EXPECTED 差异（作为默认白名单）：
+- 数据库连接地址（`spring.datasource.url`、`spring.datasource.username`）
+- Redis 地址（`spring.redis.host`、`spring.redis.port`）
+- 日志级别（`logging.level.*`，生产通常 INFO，开发通常 DEBUG）
+- 服务域名 / 回调地址（`app.callback-url`、`app.base-url`）
+- 外部服务地址（`payment.api-url`、`sms.endpoint`）
 
-将两个环境的配置展开为扁平的 key-value 对后进行比较（处理嵌套 YAML 时使用点分路径，如 `spring.data.redis.host`）。
+如果提供了白名单文件（`--whitelist`），加载白名单中的额外已知差异。
 
-### Step 2：对每个差异分类
+EXPECTED 差异在输出中**折叠显示**（提供摘要，不展开每条）。
 
-对两个环境中每一个存在差异的 key，按以下规则分类：
+### SUSPICIOUS（可能遗漏同步的配置）
 
-#### EXPECTED — 预期的环境差异
+定义：两个环境都有这个 key，但值不同，且不在 EXPECTED / 白名单中。
 
-符合以下特征的差异归为 EXPECTED：
-- 明显指向不同基础设施的值：数据库地址、Redis 地址、服务 URL、域名
-- 日志级别（dev 用 DEBUG，生产用 INFO 或 WARN）
-- 环境标识字段（`spring.profiles.active`、`app.env`）
-- 监控/链路追踪上报地址
+这类差异最需要关注：可能是 staging 做了修改但忘记同步到 production，也可能是 production 有临时改动没有同步回来。
 
-EXPECTED 类差异仍然全部输出，不隐藏，但在报告中归为低优先级。
+每条 SUSPICIOUS 差异输出：
+- key 名
+- env1（staging）的值
+- env2（production）的值
+- 风险推测（根据 key 名推断，如"超时参数差异可能影响生产稳定性"）
 
-#### SUSPICIOUS — 可疑差异（可能是遗漏同步）
+### MISSING（env2 中缺少 env1 有的 key）
 
-符合以下特征的差异归为 SUSPICIOUS：
-- 功能开关（feature flag）在两个环境值不同，但看不出有意区分的理由
-- 超时时间、重试次数、限流阈值在两个环境不一致
-- 第三方 API 密钥格式相似但值不同（可能是忘记更新）
-- 业务相关参数（金额上限、分页大小）在两个环境不同
+定义：env1（staging）有这个配置 key，但 env2（production）完全没有。
 
-**SUSPICIOUS 不代表一定有问题，但需要人工确认是有意为之还是遗漏。**
+这是高危情况：生产可能缺少必要配置，服务启动可能用了错误的默认值或直接报错。
 
-#### MISSING — env2 中缺少 env1 有的 key
+MISSING 类型必须高亮显示，不能折叠。
 
-env1 中存在、env2 中完全不存在的 key。
+### EXTRA（env2 中多出 env1 没有的 key）
 
-**这是最高优先级。** 缺少配置项通常会导致运行时报错（启动失败、NullPointerException、功能不可用）。
+定义：env2（production）有这个配置 key，但 env1（staging）完全没有。
 
-#### EXTRA — env2 中多出 env1 没有的 key
-
-env2 中存在、env1 中完全不存在的 key。
-
-可能原因：
-- env2 中有临时配置未清理
-- env2 先于 env1 配置了新功能
-- 误操作留下的无用配置
+可能是生产有临时修改未同步回 staging，或有遗留的废弃配置。需确认是否应同步回来或清理。
 
 ---
 
-### Step 3：输出差异清单
+## Step 3：输出格式
 
-**不要自动判断哪些差异"没问题"，全部输出，由人工决定。**
-
----
-
-## 输出格式
+MISSING 和 SUSPICIOUS 必须高亮显示并置顶，EXPECTED 折叠显示。
 
 ```markdown
-# 配置对比：<env1> → <env2>
+# 配置差异报告
 
-**生成时间**：YYYY-MM-DD HH:MM
-**配置来源**：[列出读取的具体文件路径]
-
----
-
-## MISSING — <env1> 有、<env2> 没有（高优先级）
-
-这些 key 在 env2 中缺失，可能导致运行时错误。
-
-| Key | env1 中的值 | 建议操作 |
-|---|---|---|
-| `wechat.app-secret` | `***`（已脱敏） | 确认 env2 是否需要此配置，如需要则添加 |
-| `payment.callback-url` | `https://staging.example.com/pay/callback` | 添加 env2 对应的 callback URL |
+**对比：** staging vs production
+**生成时间：** 2025-01-01 10:00
+**配置文件来源：** application-staging.yml + application-production.yml
 
 ---
 
-## SUSPICIOUS — 两个环境都有、但值差异可疑（需人工确认）
+## MISSING（高危：production 缺少的配置）
 
-这些差异可能是遗漏同步，也可能是有意为之。请逐一确认。
+> 以下配置在 staging 中存在，但 production 中完全缺失。
+> 可能导致服务启动失败或使用错误默认值。必须确认后再部署。
 
-| Key | env1 的值 | env2 的值 | 可疑原因 |
+| Key | staging 值 | production 值 | 风险说明 |
 |---|---|---|---|
-| `app.order.max-retry` | `3` | `5` | 重试次数在两个环境不一致，是否有意？ |
-| `app.feature.new-checkout` | `false` | `true` | 功能开关在两个环境不同，是否是生产先开启了？ |
-| `jwt.expiry-seconds` | `7200` | `3600` | Token 有效期不同，是否有意为之？ |
+| `app.feature.payment-v2` | `true` | 未配置 | feature flag 缺失，production 可能使用旧支付流程 |
+| `app.rate-limit.max-requests` | `100` | 未配置 | 限流配置缺失，production 可能无限流保护 |
+
+**操作建议：** 在部署前补充上述配置到 production。
 
 ---
 
-## EXTRA — <env2> 有、<env1> 没有（需确认是否应同步回去）
+## SUSPICIOUS（可疑：两环境值不同，非预期差异）
 
-| Key | env2 中的值 | 说明 |
-|---|---|---|
-| `app.debug-mode` | `false` | env1 中不存在此 key，是否需要同步到 env1？ |
+> 以下配置两个环境均有，但值不同，且不在已知差异白名单中。
+> 请逐条确认是故意差异（加入白名单）还是遗漏同步（需要同步）。
+
+| Key | staging 值 | production 值 | 风险推测 |
+|---|---|---|---|
+| `app.timeout.request` | `5000` | `3000` | 超时参数差异，production 更激进，可能影响稳定性 |
+| `app.cache.ttl` | `3600` | `1800` | 缓存 TTL 差异，production 缓存更新更频繁 |
+| `app.feature.new-ui` | `true` | `false` | feature flag 差异，可能是故意的，也可能是遗漏开启 |
+
+**操作建议：** 逐条与团队确认，确认为故意差异的加入白名单，确认为遗漏同步的补充同步。
 
 ---
 
-## EXPECTED — 预期的环境差异（正常，无需操作）
+## EXTRA（production 多出的配置）
 
-| Key | env1 的值 | env2 的值 |
+> 以下配置在 production 中存在，但 staging 中没有。
+> 可能是临时修改、历史遗留或应同步回 staging 的配置。
+
+| Key | production 值 | 说明 |
 |---|---|---|
-| `spring.data.mongodb.uri` | `mongodb://dev-mongo:27017/mydb` | `mongodb://prod-mongo:27017/mydb` |
-| `spring.data.redis.host` | `dev-redis` | `prod-redis` |
+| `app.legacy.old-feature` | `disabled` | 疑似废弃配置，建议确认是否可清理 |
+
+---
+
+## EXPECTED（已知正常差异，折叠）
+
+> 以下 12 条差异属于正常的环境差异（数据库地址、日志级别等），无需关注。
+
+<details>
+<summary>展开查看 12 条 EXPECTED 差异</summary>
+
+| Key | staging 值 | production 值 |
+|---|---|---|
+| `spring.datasource.url` | `jdbc:mysql://staging-db:3306/app` | `jdbc:mysql://prod-db:3306/app` |
+| `spring.redis.host` | `staging-redis` | `prod-redis` |
 | `logging.level.root` | `DEBUG` | `INFO` |
-| `spring.profiles.active` | `dev` | `production` |
+| ... | ... | ... |
+
+</details>
 
 ---
 
 ## 汇总
 
-| 类别 | 数量 | 优先级 |
+| 类型 | 数量 | 操作 |
 |---|---|---|
-| MISSING | N | 高 — 部署前必须处理 |
-| SUSPICIOUS | N | 中 — 需要人工逐一确认 |
-| EXTRA | N | 低 — 建议确认是否清理 |
-| EXPECTED | N | 无需操作 |
+| MISSING（高危） | 2 | 部署前必须补充到 production |
+| SUSPICIOUS（可疑） | 3 | 逐条确认，决定是否同步 |
+| EXTRA | 1 | 确认是否清理或同步回 staging |
+| EXPECTED | 12 | 无需操作 |
 
----
-
-## 建议操作
-
-1. **MISSING 项**：在部署前，由运维人员在 env2 中添加缺失的配置项。
-2. **SUSPICIOUS 项**：由 Tech Lead 或对应模块的负责人逐一确认是有意差异还是遗漏同步。
-3. **EXTRA 项**：确认是否需要同步到 env1，或清理 env2 中的无用配置。
-4. 处理完毕后，重新执行 `/check-config-diff` 验证差异已收敛。
+**建议：** 处理所有 MISSING 和 SUSPICIOUS 后再执行部署。
 ```
 
 ---
 
-## 安全规则
+## 注意事项
 
-- **密钥、密码、token 等敏感值必须脱敏**：在输出中显示为 `***`，不输出原文。
-  - 识别标志：key 名包含 `secret`、`password`、`passwd`、`token`、`key`、`credential`、`api-key` 等
-- **不修改任何配置文件**：`/check-config-diff` 只输出差异报告，不执行任何写操作。
-- **不判断差异是否安全**：所有 SUSPICIOUS 和 MISSING 差异必须输出，不能因为"看起来没问题"就省略。
-- **分类不确定时归为 SUSPICIOUS**：当无法确定某个差异属于 EXPECTED 还是 SUSPICIOUS 时，选择 SUSPICIOUS（保守原则）。
+- **不自动判断哪些差异可以忽略**，全部列出，由人决定
+- **不自动修改任何环境的配置**，只输出差异报告
+- EXPECTED 的判断依据：key 名符合常见环境变量（DB 地址、Redis 地址、日志级别、域名）或在白名单文件中明确列出
+- 不在白名单中的差异，即使看起来"正常"，也归入 SUSPICIOUS，不擅自归类为 EXPECTED
+- 配置中包含密钥 / 密码的 value（key 名含 `password`、`secret`、`key`、`token`），在报告中脱敏显示为 `***`，不输出实际值

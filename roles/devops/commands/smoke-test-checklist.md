@@ -1,77 +1,112 @@
-# /smoke-test-checklist
+# /smoke-test-checklist — 生成生产冒烟测试清单
 
-生成部署后生产环境冒烟测试清单。
-
-## 用法
+## 使用说明
 
 ```
 /smoke-test-checklist
 ```
 
----
-
-## 执行步骤
-
-### Step 1：识别核心链路接口
-
-从接口规范（OpenAPI 或 `docs/api-spec.md`）中识别接口，并按层级分类：
-
-**识别标准：**
-- L1 基础连通：独立于业务的基础设施检查点
-- L2 核心认证：所有业务操作的前置条件
-- L3 核心业务：系统存在的最主要价值，用户最频繁使用的 1-3 个操作
-
-**原则：每层测试选最小验证集，一次请求能验证最多信息。**
+无需额外参数。命令自动读取接口规范，生成部署后可在 10 分钟内完成的生产冒烟测试清单。
 
 ---
 
-### Step 2：生成分层测试清单
+## Step 1：读取接口规范，识别三类核心接口
 
-#### L1 — 基础连通（目标：1 分钟内完成）
+从以下位置读取接口规范：
+1. OpenAPI / Swagger 文件
+2. `docs/api-spec.md`
+3. Controller 代码（作为补充）
 
-每项测试内容：
-- 健康检查端点（`/actuator/health` 或 `/health`）
-- 从健康检查响应中确认数据库连接状态
-- 从健康检查响应中确认缓存（Redis）连接状态
-- 关键外部服务连通性（如支付网关 ping、短信服务可达性）
+识别以下三类核心接口：
 
-健康检查一次请求能同时验证上述多个依赖，优先读取健康检查的详细响应。
+**认证链路**：登录、Token 验证、Token 刷新、登出
 
-#### L2 — 核心认证（目标：2 分钟内完成）
+**核心业务操作**：该系统最关键的 1-3 个用户操作（根据接口规范判断；如无法判断，列出候选接口并询问确认）
 
-必须包含的场景：
-
-1. 正常登录：使用合法凭证登录，验证 token 返回
-2. Token 验证：使用有效 token 访问受保护接口，验证 200
-3. 无效 Token 拒绝：使用无效 token，验证 401
-
-#### L3 — 核心业务（目标：5 分钟内完成）
-
-从接口规范中选出 1-3 个最关键的用户操作，标准：
-- 用户最频繁执行的操作（DAU 最高的路径）
-- 系统的核心价值主张（没有这个功能系统没有意义）
-- 本次部署直接涉及的功能（新增或修改的核心接口）
-
-**如果接口数量过多，只取最关键的 3 个，总时间控制在 10 分钟内。**
+**数据读写**：典型的列表查询、详情查询、创建操作（验证数据库连通性和读写链路）
 
 ---
 
-### Step 3：为每条测试生成可执行请求示例
+## Step 2：生成分层冒烟清单
 
-每条测试项包含：
-- 可直接运行的 curl 命令（使用环境变量占位，不硬编码地址和密码）
-- 预期响应的关键字段（不只是状态码，还有响应体的关键值）
-- 超时阈值（超过此时间视为异常，建议 L1 < 1s，L2 < 2s，L3 < 5s）
-- 结果记录位（留给执行人填写）
+### L1 — 基础连通（预计 2 分钟）
 
-格式示例：
-```bash
-curl -s -X POST "$BASE_URL/api/v1/auth/login" \
-  -H "Content-Type: application/json" \
-  -d '{"username": "$SMOKE_TEST_USER", "password": "$SMOKE_TEST_PASS"}'
-# 预期：HTTP 200，响应体包含 "token" 字段
-# 超时阈值：2 秒
-# 结果：___
+验证服务本身和核心依赖是否存活：
+
+```
+[ ] 健康检查端点
+    curl -s https://api.example.com/actuator/health | jq '.status'
+    预期：{"status":"UP"}
+    响应时间阈值：< 500ms
+
+[ ] 数据库连接
+    从健康检查响应中确认 DB 状态：jq '.components.db.status'
+    预期："UP"
+
+[ ] Redis 连接（如有）
+    jq '.components.redis.status'
+    预期："UP"
+
+[ ] 关键外部服务连通（如有，如支付网关、短信服务）
+    curl -s https://api.example.com/actuator/health | jq '.components.<service-name>.status'
+    预期："UP"
+```
+
+### L2 — 认证链路（预计 3 分钟）
+
+验证认证系统完整可用：
+
+```
+[ ] 登录（核心，无法跳过）
+    curl -s -X POST https://api.example.com/api/v1/auth/login \
+      -H "Content-Type: application/json" \
+      -d '{"username":"smoke-test@example.com","password":"<test-password>"}' | jq '.'
+    预期：HTTP 200，响应含 access_token 和 refresh_token
+    响应时间阈值：< 2000ms
+
+[ ] Token 验证（使用上一步获取的 token）
+    curl -s https://api.example.com/api/v1/auth/me \
+      -H "Authorization: Bearer <access_token>" | jq '.data.id'
+    预期：返回当前用户 ID，非空
+
+[ ] Token 刷新（如有 refresh_token 机制）
+    curl -s -X POST https://api.example.com/api/v1/auth/refresh \
+      -H "Content-Type: application/json" \
+      -d '{"refresh_token":"<refresh_token>"}' | jq '.data.access_token'
+    预期：返回新的 access_token，非空
+
+[ ] 无效 Token 被拒绝
+    curl -s https://api.example.com/api/v1/auth/me \
+      -H "Authorization: Bearer invalid-token" | jq '.code'
+    预期：HTTP 401 或响应码为未认证错误码
+```
+
+### L3 — 核心业务 happy path（预计 5 分钟）
+
+本次 Sprint 新增或修改的最关键 1-3 个用户操作，只测 happy path，不测边界：
+
+（以下为示例，实际内容根据接口规范生成）
+
+```
+[ ] [本次 Sprint 新增，重点关注] 创建文章
+    curl -s -X POST https://api.example.com/api/v1/articles \
+      -H "Authorization: Bearer <access_token>" \
+      -H "Content-Type: application/json" \
+      -d '{"title":"冒烟测试文章","content":"测试内容"}' | jq '.data.id'
+    预期：HTTP 200，返回新创建的文章 ID，非空
+    响应时间阈值：< 2000ms
+
+[ ] 查询文章列表
+    curl -s "https://api.example.com/api/v1/articles?page=1&size=10" \
+      -H "Authorization: Bearer <access_token>" | jq '.data.total'
+    预期：HTTP 200，total >= 1（上一步创建的文章应出现）
+    响应时间阈值：< 1000ms
+
+[ ] 查询文章详情
+    curl -s "https://api.example.com/api/v1/articles/<article-id>" \
+      -H "Authorization: Bearer <access_token>" | jq '.data.title'
+    预期：HTTP 200，title = "冒烟测试文章"
+    响应时间阈值：< 500ms
 ```
 
 ---
@@ -79,110 +114,95 @@ curl -s -X POST "$BASE_URL/api/v1/auth/login" \
 ## 输出格式
 
 ```markdown
-# 冒烟测试清单 — [服务名] [日期]
+# 生产冒烟测试清单 — [服务名] [版本号] [日期]
 
-**目标环境**：production
-**时间预算**：10 分钟
-**执行人**：___
-**执行时间**：___
-**部署版本**：___
+**预计总时间：10 分钟**
+**执行人：**
+**执行时间：**
 
 ---
 
-## L1 — 基础连通（目标：1 分钟）
+## L1 — 基础连通（预计 2 分钟）
 
-- [ ] 健康检查
+- [ ] 健康检查端点
   ```bash
-  curl -s "$BASE_URL/actuator/health"
+  curl -s https://api.example.com/actuator/health | jq '.status'
   ```
-  预期：HTTP 200，`status: "UP"`，`db.status: "UP"`，`redis.status: "UP"`
-  超时阈值：1 秒
-  结果：___
+  预期：`"UP"` | 阈值：< 500ms | 结果：___
 
-- [ ] [如有额外的外部服务检查点，列在此处]
+- [ ] 数据库连接
+  ```bash
+  curl -s https://api.example.com/actuator/health | jq '.components.db.status'
+  ```
+  预期：`"UP"` | 结果：___
+
+- [ ] Redis 连接
+  （同上，查看 redis 组件状态）
+  预期：`"UP"` | 结果：___
 
 ---
 
-## L2 — 核心认证（目标：2 分钟）
+## L2 — 认证链路（预计 3 分钟）
 
-- [ ] 正常登录
+- [ ] 登录
   ```bash
-  curl -s -X POST "$BASE_URL/api/v1/auth/login" \
+  curl -s -X POST https://api.example.com/api/v1/auth/login \
     -H "Content-Type: application/json" \
-    -d '{"username": "$SMOKE_TEST_USER", "password": "$SMOKE_TEST_PASS"}'
+    -d '{"username":"smoke-test@example.com","password":"<test-password>"}'
   ```
-  预期：HTTP 200，响应体包含 `token` 字段（非空字符串）
-  超时阈值：2 秒
-  结果：___（将 token 存入 $TOKEN 变量）
+  预期：HTTP 200，含 access_token | 阈值：< 2000ms | 结果：___
 
-- [ ] Token 验证（使用上步获得的 token）
+- [ ] Token 验证
   ```bash
-  curl -s "$BASE_URL/api/v1/users/me" \
-    -H "Authorization: Bearer $TOKEN"
+  curl -s https://api.example.com/api/v1/auth/me \
+    -H "Authorization: Bearer <上一步的 access_token>"
   ```
-  预期：HTTP 200，响应体包含当前用户信息
-  超时阈值：2 秒
-  结果：___
+  预期：返回用户 ID | 结果：___
 
-- [ ] 无效 Token 拒绝
-  ```bash
-  curl -s "$BASE_URL/api/v1/users/me" \
-    -H "Authorization: Bearer invalid_token_for_smoke_test"
-  ```
-  预期：HTTP 401
-  超时阈值：1 秒
-  结果：___
+- [ ] Token 刷新
+  （使用 refresh_token 换新 access_token）
+  预期：返回新 access_token | 结果：___
 
 ---
 
-## L3 — 核心业务（目标：5 分钟）
+## L3 — 核心业务（预计 5 分钟）
 
-[根据接口规范生成，每个核心操作一条，标注本次部署新增/修改的接口]
+[本次 Sprint 新增或修改的接口，标注"新增，重点关注"]
 
-- [ ] [核心操作 1]
+- [ ] **[本次 Sprint 新增，重点关注]** 创建文章
   ```bash
-  [可执行的 curl 命令]
+  curl -s -X POST https://api.example.com/api/v1/articles \
+    -H "Authorization: Bearer <access_token>" \
+    -H "Content-Type: application/json" \
+    -d '{"title":"冒烟测试文章","content":"测试内容"}'
   ```
-  预期：[HTTP 状态码]，响应体关键字段：[字段=预期值]
-  超时阈值：[X] 秒
-  结果：___
+  预期：HTTP 200，返回 article.id | 阈值：< 2000ms | 结果：___
+
+- [ ] 查询文章列表
+  ```bash
+  curl -s "https://api.example.com/api/v1/articles?page=1&size=10" \
+    -H "Authorization: Bearer <access_token>"
+  ```
+  预期：HTTP 200，total >= 1 | 阈值：< 1000ms | 结果：___
 
 ---
 
-## 最终结论
+## 冒烟结果汇总
 
-- [ ] L1 全部通过
-- [ ] L2 全部通过
-- [ ] L3 全部通过
-
-**综合结论**：PASS / FAIL
-
-**如果 FAIL**：
-- 立即通知 Tech Lead
-- 参考 `gen-rollback-plan` 生成的回滚方案评估是否回滚
-- 记录失败的具体步骤和错误信息
+- L1 通过：是 / 否
+- L2 通过：是 / 否
+- L3 通过：是 / 否
+- 整体结论：通过 / 不通过（原因：___）
+- 执行人签字：___
+- 完成时间：___
 ```
 
 ---
 
-## 环境变量约定
+## 注意事项
 
-生成的 curl 命令统一使用以下环境变量，执行前在终端中 export：
-
-```bash
-export BASE_URL="https://api.example.com"         # 生产环境 base URL
-export SMOKE_TEST_USER="smoke@example.com"         # 专用冒烟测试账号
-export SMOKE_TEST_PASS="xxx"                        # 从密钥管理系统获取
-export TOKEN=""                                     # 登录后填入
-```
-
-**不要在 checklist 文档中硬编码密码或生产环境 token。**
-
----
-
-## 规则
-
-- 总耗时必须控制在 10 分钟内：如果 L3 有太多新接口，只选最关键的 3 个
-- 每条测试的预期值必须具体（不能只写"应该成功"），至少包含状态码 + 响应体关键字段
-- L1 和 L2 是必测的，不能因为时间紧张而跳过
-- 冒烟测试发现问题，不是"测试失败"，是"部署门控生效"，是正常流程
+- 冒烟测试账号（`smoke-test@example.com`）需提前在生产环境创建，并在 KeePass / 密码管理器中记录
+- 冒烟测试创建的数据（如测试文章）需在测试结束后手动清理，或使用专用测试租户隔离
+- L1 任何一项不通过：停止冒烟，回报 Tech Lead，等待处置
+- L2 / L3 任何一项不通过：记录具体失败信息，报告 Tech Lead，由 Tech Lead 决定是否触发回滚评估
+- 冒烟清单中标注"本次 Sprint 新增，重点关注"的接口为高风险接口，失败时优先排查
