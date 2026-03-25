@@ -122,9 +122,9 @@ PM（Claude Web + GitHub MCP）          工程师（Claude Code CLI）
 
 设计想法有了，但想法不等于能用。2026-03-25，做了一次端到端的测试。
 
-测试仓库：`YanhongPan/adobe-express-test`（一个专为测试搭建的协作私有仓）。
+测试仓库：一个专为测试搭建的协作私有仓，PM 和工程师各自是 Collaborator。
 
-**TC-01**：PM（YanhongPan）在 Claude Web 通过 MCP 创建了 Issue #1——`[GAP] V1 与 V2 登录方式需求冲突：邮箱密码登录 vs 谷歌登录`。Issue 打上了 `gap` + `high` label。
+**TC-01**：PM 在 Claude Web 通过 MCP 创建了 Issue #1——`[GAP] V1 与 V2 登录方式需求冲突：邮箱密码登录 vs 谷歌登录`。Issue 打上了 `gap` + `high` label。
 
 **TC-02**：工程师在 Claude Code CLI 运行 `/be-review-gaps`，通过 MCP 读取 Issue，生成技术分析（影响评估、方案对比、工期估算），写回 Comment，label 更新为 `be-reviewed`。
 
