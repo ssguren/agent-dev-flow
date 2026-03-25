@@ -29,6 +29,27 @@ claude mcp add --transport stdio github -- npx -y @modelcontextprotocol/server-g
 
 ---
 
+### Q: GitHub MCP `list_issues` 对私有仓库返回 Not Found，但 PAT 有权限
+
+**状态**：已验证（workaround 可用）
+
+**现象**：GitHub MCP 已 connected，PAT 配置了 `repo` scope，但调用 `mcp__github__list_issues` 时返回 `Not Found: Resource not found`；同时 `search_repositories` 也搜索不到该私有仓库。
+
+**根本原因**：`@modelcontextprotocol/server-github` 的部分工具（如 `list_issues`、`search_repositories`）在处理私有仓库时存在局限，MCP server 层面的请求可能未正确携带认证或走了不同的 API 路径。
+
+**验证方式**：直接用 PAT 调用 GitHub REST API，可以正常返回数据：
+
+```bash
+curl -s -H "Authorization: token <PAT>" \
+  "https://api.github.com/repos/<owner>/<repo>/issues?state=all"
+```
+
+**Workaround**：在需要读取私有仓库 Issues 时，通过 `Bash` 工具用 `curl` + PAT 直接请求 GitHub API，不依赖 MCP 工具。
+
+**注意**：PAT 存储在 `~/.claude/settings.json` 的 `mcpServers.github.env.GITHUB_PERSONAL_ACCESS_TOKEN` 中，可直接读取后传入 curl。
+
+---
+
 ## 待补充
 
 > 测试过程中发现的其他问题将持续更新到此文件。
