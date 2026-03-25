@@ -52,6 +52,16 @@ PR Description（Developer）
 
 ## 命令目录
 
-所有命令定义在 `commands/` 下，按阶段分目录。使用时在对应项目中运行对应命令。
+所有命令定义在 `roles/<role>/commands/` 下，按角色分目录。共享命令在 `roles/shared/commands/`。
 
-详见各阶段 workflow 文档。
+| 角色 | 命令路径 |
+|------|---------|
+| PM | `roles/pm/commands/` |
+| Tech Lead | `roles/tech-lead/commands/` |
+| Backend | `roles/backend/commands/` |
+| Frontend | `roles/frontend/commands/` |
+| QA | `roles/qa/commands/` |
+| DevOps | `roles/devops/commands/` |
+| 共享（多角色通用） | `roles/shared/commands/` |
+
+详见各角色的 `profile.md` 和各阶段 workflow 文档。
