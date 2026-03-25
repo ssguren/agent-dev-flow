@@ -231,12 +231,66 @@ Claude API（携带 command.md 作为 system prompt）
 
 ## 落地难点与应对
 
+### 难点一：非技术人员会话无持久上下文
+
+**问题**：开发者用 Claude Code 有 `CLAUDE.md` 和本地文件保底，PM 的 Claude Web 每次新对话上下文清空，需要重新喂背景。
+
+**应对**：Claude Web Project + system prompt + 触发词
+
+- 为每个项目创建一个 Claude Project，system prompt 写死角色、仓库地址、行为规则
+- 约定触发词（如"开始今天的工作"），Claude 自动通过 MCP 拉取当前 Sprint Issues 和待处理 Gap
+- PM 只需记住开场白，上下文自动加载
+
+详见 `pm-claude-project-setup.md`。
+
+---
+
+### 难点二：PM 侧 Agent 推理质量
+
+**问题**：PM 的 Agent 没有代码上下文，推理质量是否比开发者侧差？
+
+**结论**：不是问题。
+
+PM 需要的上下文全在文档仓库里——需求文档、API 规范、ADR、Sprint 计划——通过 MCP 完全可读。PM 的 Agent 推理质量不取决于代码，取决于文档质量。
+
+这反过来强化了框架的核心约定：**文档仓库是整个协作体系的地基，文档维护纪律决定两边 Agent 的能力上限。**
+
+---
+
+### 难点三：写回 GitHub 的内容谁来审
+
+**问题**：Agent 替 PM 写了一条 Comment，以 PM 本人账号发出，PM 没仔细看——内容可能有误但已经公开。
+
+**两个子问题：**
+
+- **以谁的名义发**：GitHub MCP 用配置者本人 token，写回的内容是 PM 本人账号，开发者看到的不是 bot 输出，权重正常。
+- **有没有确认再发**：靠 system prompt 约束"写入前必须展示草稿等待确认"，PM 回复"确认"或"发"才执行。
+
+本质上是铁律的延伸：**Agent 生成草稿，人确认后发出。** 在 Claude Web 场景下，确认动作是 PM 在对话里回一个字。
+
+---
+
+### 难点四：MCP 授权粒度粗
+
+**问题**：GitHub MCP 是仓库级授权，无法限制 PM 的 Agent 只写 Issues、不改文件。
+
+**应对：分仓库隔离 + system prompt 限制**
+
+- PM 的 MCP **只授权文档仓库**，不授权代码仓库——物理上碰不到代码
+- 文档仓库误操作有 git 历史可还原，损失可控
+- system prompt 加约束：不允许直接修改任何 `.md` 文件，所有文档变更通过 Issue 或 Comment 提出，由开发者执行
+
+PM 侧 Agent 的写操作窗口收窄到 Issues 和 Comments，风险极小。
+
+---
+
+### 其他技术难点
+
 | 难点 | 说明 | 应对 |
 |------|------|------|
 | MCP 非持续监听 | GitHub MCP 是按需调用，不是 webhook | 用 GitHub Actions 作为事件驱动层，Actions 触发后调用 MCP |
-| Comment 触发安全风险 | 任何人都能发 `/command` | Actions 中校验 `github.actor` 是否为 collaborator，非授权人的触发直接忽略 |
-| Agent 写权限 | MCP server 需要 repo 写权限 | 用专用 bot 账号的 PAT，最小权限（issues: write, pull-requests: write） |
-| 跨仓库场景 | 共享文档仓库 ≠ 代码仓库 | 共享文档仓库部署一套 Actions，代码仓库部署另一套，MCP 分别授权 |
+| Comment 触发安全风险 | 任何人都能发 `/command` | Actions 中校验 `github.actor` 是否为 collaborator，非授权人触发直接忽略 |
+| Actions 触发延迟 | GitHub Actions 冷启动约 30-60 秒 | 异步场景可接受；实时需求走 Claude Web 对话，不走 Actions |
 
 ---
 
