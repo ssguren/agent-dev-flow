@@ -1,0 +1,83 @@
+name: Gap — 需求对齐
+description: 记录任何角色发现的需求、设计、实现之间的分歧，推动决策落地
+labels: ["gap", "raised"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **任何角色都可以开 Gap。** 不需要有答案，只需要把问题描述清楚。
+
+  - type: dropdown
+    id: role
+    attributes:
+      label: 发起角色
+      description: 你是从哪个视角发现这个问题的？
+      options:
+        - PM（需求与设计不对齐）
+        - Backend（实现时发现需求模糊或技术冲突）
+        - Frontend（联调时发现接口或交互问题）
+        - QA（测试时发现行为与需求不符）
+        - Tech Lead（架构层面的分歧）
+        - DevOps（部署或配置层面的问题）
+    validations:
+      required: true
+
+  - type: dropdown
+    id: type
+    attributes:
+      label: 问题类型
+      description: 这个 Gap 属于哪类分歧？
+      options:
+        - 需求模糊（需求文档描述不清楚）
+        - 需求冲突（两处需求相互矛盾）
+        - 技术约束（需求在技术上难以实现或有更优方案）
+        - 接口分歧（前后端对接口设计理解不一致）
+        - 行为异常（实现与需求描述不符）
+        - 范围不明（不确定某功能是否在当前 Sprint 内）
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 发现了什么问题？现状和期望之间的差距是什么？
+      placeholder: 描述清楚"现在是什么"和"应该是什么"，不需要给出解决方案
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: 影响范围
+      description: 不解决会影响哪些功能、哪个 Sprint、哪个角色的工作？
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: 优先级
+      options:
+        - high（阻塞当前 Sprint）
+        - medium（影响后续 Sprint，需尽快确认）
+        - low（不紧急，但需要最终决策）
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: 建议方向（可选）
+      description: 如果你有倾向的解决方向，或者需要某个角色提供什么信息才能推进决策，写在这里
+    validations:
+      required: false
+
+  - type: input
+    id: source
+    attributes:
+      label: 来源
+      description: 触发这个 Gap 的文档、接口、代码位置或测试用例
+      placeholder: 例如：high-level-PR.md §3.2 / POST /api/v1/auth/login / TestCase-042
+    validations:
+      required: false

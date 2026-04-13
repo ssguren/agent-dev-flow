@@ -102,12 +102,42 @@ Frontend Dev 角色产出以下类型文件：
 
 以下约定在项目未做特别说明时生效。项目 CLAUDE.md 中的任何约定均优先于此处。
 
-### 语言与框架
+**每次对话开始时，须确认产品形态；如未说明，主动询问。**
+
+### 产品形态 A：Web 端 SaaS / CMS 管理后台
+
+- 框架：React + TypeScript（严格模式）
+- UI 组件库：Ant Design（antd），优先使用函数组件 + Hooks
+- 使用 antd 已有组件（Table、Form、Modal、Select 等），不自行重写
+- 自定义样式通过 antd 的 ConfigProvider / CSS Variables 实现，不直接覆盖组件库内部 class
+- 状态管理：服务端状态用 TanStack Query；全局 UI 状态用 Zustand
+
+### 产品形态 B：微信小程序
+
+- 框架：Taro（跨端，基于 React 语法）或原生微信小程序，按项目决定
+- UI 组件库：Vant Weapp（原生）/ @antmjs/vantui（Taro）
+- Taro 项目：TypeScript，遵循 Taro 的 React 规范；注意与 Web React 的 API 差异（路由用 `Taro.navigateTo`，存储用 `Taro.setStorage`，不得使用 `document`、`window`）
+- 原生项目：遵循小程序原生开发规范（WXML + WXSS + JS/TS）
+- Vant 组件按需引入，不得全量引入
+- 必须考虑包体积控制和分包加载策略
+- 涉及用户授权（登录、手机号、位置）必须说明授权流程和拒绝后的降级方案
+- 涉及支付必须说明支付流程和异常处理（失败、超时、重复支付）
+
+### 产品形态 C：活动小程序 / H5
+
+- 技术选择：Taro（同时投放小程序和 H5）或原生 H5（仅 H5 渠道），按项目决定
+- H5 UI 组件库：Ant Design Mobile（antd-mobile），必须满足响应式交互，适配 320px ~ 750px
+- 小程序部分：同产品形态 B，使用 Vant
+- 原生 H5：React + TypeScript，或按项目复杂度使用轻量方案
+- 必须考虑移动端适配方案（rem / vw / flexible）
+- 必须考虑分享能力（微信 JS-SDK 配置、分享图生成等）
+- 首屏关键资源需优化加载性能
+
+### 通用语言约束
 
 - 主语言：TypeScript（严格模式，禁止使用 `any`，包括 `as any` 和 `// @ts-ignore`）
-- UI 框架：React（优先）或 Vue 3（根据项目 CLAUDE.md）
 - HTTP 客户端：axios 或 ky（统一封装，不直接暴露给组件）
-- 状态管理：服务端状态用 TanStack Query；全局 UI 状态用 Zustand（React）或 Pinia（Vue）
+- 代码中禁止中文（变量名 / 字符串 / 日志）；注释、`@DisplayName`、文档文件除外
 
 ### API 调用封装规则
 
@@ -167,3 +197,6 @@ src/
 - **不跳过** Loading 和 Error 状态
 - **不在**未读取项目 CLAUDE.md 的情况下假设框架和规范
 - **不将**多个不相关的功能组件放到同一个文件
+- **不混用** UI 组件库：Web 端用 antd，H5 用 antd-mobile，小程序用 Vant，不得跨产品形态混用
+- **不在 Taro 项目中**直接使用 Web DOM API（`document`、`window`），必须使用 Taro 跨端 API
+- **不在**未确认产品形态的情况下开始任何前端实现
